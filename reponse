@@ -1,0 +1,676 @@
+Para coletar e armazenar informações sobre marés e praias para uso com agentes (como sistemas baseados em LangGraph/Strands), aqui está um guia completo:
+
+## 1. Fontes de Dados sobre Marés
+
+### APIs Gratuitas
+```python
+import requests
+import sqlite3
+from datetime import datetime, timedelta
+import json
+
+# NOAA (EUA) - Gratuita
+def get_noaa_tides(station_id, begin_date, end_date):
+    url = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
+    params = {
+        'product': 'predictions',
+        'application': 'NOS.COOPS.TAC.WL',
+        'begin_date': begin_date,
+        'end_date': end_date,
+        'datum': 'MLLW',
+        'station': station_id,
+        'time_zone': 'lst_ldt',
+        'units': 'metric',
+        'interval': 'hilo',
+        'format': 'json'
+    }
+    response = requests.get(url, params=params)
+    return response.json()
+
+# WorldTides API (Limitada gratuita)
+def get_world_tides(lat, lon, start, length):
+    api_key = "SUA_API_KEY"
+    url = f"https://www.worldtides.info/api/v2?heights&lat={lat}&lon={lon}&start={start}&length={length}&key={api_key}"
+    response = requests.get(url)
+    return response.json()
+```
+
+### Web Scraping (quando necessário)
+```python
+from bs4 import BeautifulSoup
+import requests
+
+def scrape_tides_data(url):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    response = requests.get(url, headers=headers)
+    soup = BeautifulSoup(response.content, 'html.parser')
+    
+    # Adapte conforme o site específico
+    tide_data = []
+    # ... lógica de extração específica
+    
+    return tide_data
+```
+
+## 2. Sistema de Banco de Dados
+
+```python
+import sqlite3
+from datetime import datetime
+
+class TideDatabase:
+    def __init__(self, db_path="tides_beaches.db"):
+        self.db_path = db_path
+        self.init_database()
+    
+    def init_database(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Tabela de praias
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS beaches (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            country TEXT,
+            region TEXT,
+            station_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+        
+        # Tabela de dados de marés
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tides (
+            id INTEGER PRIMARY KEY,
+            beach_id INTEGER,
+            datetime TIMESTAMP NOT NULL,
+            height REAL NOT NULL,
+            tide_type TEXT, -- 'high', 'low'
+            source TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (beach_id) REFERENCES beaches (id)
+        )
+        ''')
+        
+        # Tabela de condições das praias
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS beach_conditions (
+            id INTEGER PRIMARY KEY,
+            beach_id INTEGER,
+            date DATE NOT NULL,
+            wave_height REAL,
+            wind_speed REAL,
+            wind_direction TEXT,
+            weather_condition TEXT,
+            temperature REAL,
+            water_temperature REAL,
+            visibility TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (beach_id) REFERENCES beaches (id)
+        )
+        ''')
+        
+        conn.commit()
+        conn.close()
+    
+    def add_beach(self, name, lat, lon, country, region, station_id=None):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+        INSERT INTO beaches (name, latitude, longitude, country, region, station_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ''', (name, lat, lon, country, region, station_id))
+        
+        beach_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return beach_id
+    
+    def add_tide_data(self, beach_id, datetime_str, height, tide_type, source):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+        INSERT INTO tides (beach_id, datetime, height, tide_type, source)
+        VALUES (?, ?, ?, ?, ?)
+        ''', (beach_id, datetime_str, height, tide_type, source))
+        
+        conn.commit()
+        conn.close()
+```
+
+## 3. Coletores de Dados Automatizados
+
+```python
+import schedule
+import time
+from datetime import datetime, timedelta
+
+class TideDataCollector:
+    def __init__(self, database):
+        self.db = database
+    
+    def collect_all_tides(self):
+        """Coleta dados de marés para todas as praias cadastradas"""
+        conn = sqlite3.connect(self.db.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT id, name, latitude, longitude, station_id FROM beaches")
+        beaches = cursor.fetchall()
+        
+        for beach in beaches:
+            beach_id, name, lat, lon, station_id = beach
+            print(f"Coletando dados para {name}...")
+            
+            try:
+                # Usar diferentes APIs baseado na localização
+                if station_id:  # NOAA
+                    tide_data = self.collect_noaa_data(station_id)
+                else:  # WorldTides ou outra API
+                    tide_data = self.collect_world_tides_data(lat, lon)
+                
+                self.save_tide_data(beach_id, tide_data)
+                
+            except Exception as e:
+                print(f"Erro ao coletar dados para {name}: {e}")
+        
+        conn.close()
+    
+    def collect_noaa_data(self, station_id):
+        today = datetime.now().strftime("%Y%m%d")
+        end_date = (datetime.now() + timedelta(days=7)).strftime("%Y%m%d")
+        
+        return get_noaa_tides(station_id, today, end_date)
+    
+    def save_tide_data(self, beach_id, tide_data):
+        # Processar e salvar os dados conforme o formato da API
+        for prediction in tide_data.get('predictions', []):
+            self.db.add_tide_data(
+                beach_id,
+                prediction['t'],
+                float(prediction['v']),
+                prediction['type'],
+                'NOAA'
+            )
+
+# Agendar coletas automáticas
+def setup_scheduler():
+    collector = TideDataCollector(TideDatabase())
+    
+    # Coletar dados a cada 6 horas
+    schedule.every(6).hours.do(collector.collect_all_tides)
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(3600)  # Verificar a cada hora
+```
+
+## 4. Integração com Agentes
+
+```python
+from typing import List, Dict, Any
+from datetime import datetime, timedelta
+
+class TideAgent:
+    def __init__(self, database_path: str):
+        self.db_path = database_path
+    
+    def get_current_tide_info(self, beach_name: str) -> Dict[str, Any]:
+        """Retorna informações atuais sobre a maré"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Buscar a praia
+        cursor.execute("SELECT id FROM beaches WHERE name LIKE ?", (f"%{beach_name}%",))
+        beach_result = cursor.fetchone()
+        
+        if not beach_result:
+            return {"error": "Praia não encontrada"}
+        
+        beach_id = beach_result[0]
+        now = datetime.now()
+        
+        # Buscar próximas marés
+        cursor.execute('''
+        SELECT datetime, height, tide_type 
+        FROM tides 
+        WHERE beach_id = ? AND datetime >= ? 
+        ORDER BY datetime 
+        LIMIT 4
+        ''', (beach_id, now.isoformat()))
+        
+        tides = cursor.fetchall()
+        conn.close()
+        
+        return {
+            "beach": beach_name,
+            "current_time": now.isoformat(),
+            "next_tides": [
+                {
+                    "time": tide[0],
+                    "height": tide[1],
+                    "type": tide[2]
+                } for tide in tides
+            ]
+        }
+    
+    def get_best_fishing_times(self, beach_name: str, days: int = 3) -> List[Dict]:
+        """Retorna os melhores horários para pesca"""
+        tide_info = self.get_current_tide_info(beach_name)
+        
+        if "error" in tide_info:
+            return []
+        
+        best_times = []
+        for tide in tide_info["next_tides"]:
+            # Regra simples: 2h antes e depois da maré alta
+            if tide["type"] == "high":
+                tide_time = datetime.fromisoformat(tide["time"])
+                best_times.append({
+                    "start": (tide_time - timedelta(hours=2)).isoformat(),
+                    "end": (tide_time + timedelta(hours=2)).isoformat(),
+                    "reason": f"Maré alta ({tide['height']}m) às {tide_time.strftime('%H:%M')}"
+                })
+        
+        return best_times
+
+# Funções para uso com LangChain/LangGraph
+def create_tide_tools():
+    """Criar ferramentas para usar com agentes"""
+    tide_agent = TideAgent("tides_beaches.db")
+    
+    def get_tide_info_tool(beach_name: str) -> str:
+        """Ferramenta para obter informações de maré"""
+        info = tide_agent.get_current_tide_info(beach_name)
+        return json.dumps(info, indent=2)
+    
+    def get_fishing_times_tool(beach_name: str) -> str:
+        """Ferramenta para obter melhores horários de pesca"""
+        times = tide_agent.get_best_fishing_times(beach_name)
+        return json.dumps(times, indent=2)
+    
+    return [get_tide_info_tool, get_fishing_times_tool]
+```
+
+## 5. Exemplo de Uso
+
+```python
+# Configurar o sistema
+db = TideDatabase()
+
+# Adicionar algumas praias
+beach_id = db.add_beach(
+    "Copacabana", 
+    -22.9711, 
+    -43.1822, 
+    "Brasil", 
+    "Rio de Janeiro"
+)
+
+# Inicializar coleta de dados
+collector = TideDataCollector(db)
+collector.collect_all_tides()
+
+# Usar com agente
+tide_agent = TideAgent("tides_beaches.db")
+current_info = tide_agent.get_current_tide_info("Copacabana")
+print(json.dumps(current_info, indent=2))
+
+fishing_times = tide_agent.get_best_fishing_times("Copacabana")
+print("Melhores horários para pesca:")
+for time_slot in fishing_times:
+    print(f"- {time_slot['start']} até {time_slot['end']}: {time_slot['reason']}")
+```
+
+## 6. APIs Recomendadas
+
+1. **NOAA Tides and Currents** (EUA) - Gratuita
+2. **WorldTides** - Freemium (500 chamadas/mês grátis)
+3. **Tides API** - Várias opções pagas
+4. **MarineWeather APIs** - Para condições adicionais
+
+Este sistema permite coletar, armazenar e consultar dados de marés de forma estruturada para uso com agentes inteligentes. Você pode expandir adicionando mais fontes de dados, melhores algoritmos de previsão, e integrações mais sofisticadas com frameworks de agentes.Para coletar e armazenar informações sobre marés e praias para uso com agentes (como sistemas baseados em LangGraph/Strands), aqui está um guia completo:
+
+## 1. Fontes de Dados sobre Marés
+
+### APIs Gratuitas
+```python
+import requests
+import sqlite3
+from datetime import datetime, timedelta
+import json
+
+# NOAA (EUA) - Gratuita
+def get_noaa_tides(station_id, begin_date, end_date):
+    url = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
+    params = {
+        'product': 'predictions',
+        'application': 'NOS.COOPS.TAC.WL',
+        'begin_date': begin_date,
+        'end_date': end_date,
+        'datum': 'MLLW',
+        'station': station_id,
+        'time_zone': 'lst_ldt',
+        'units': 'metric',
+        'interval': 'hilo',
+        'format': 'json'
+    }
+    response = requests.get(url, params=params)
+    return response.json()
+
+# WorldTides API (Limitada gratuita)
+def get_world_tides(lat, lon, start, length):
+    api_key = "SUA_API_KEY"
+    url = f"https://www.worldtides.info/api/v2?heights&lat={lat}&lon={lon}&start={start}&length={length}&key={api_key}"
+    response = requests.get(url)
+    return response.json()
+```
+
+### Web Scraping (quando necessário)
+```python
+from bs4 import BeautifulSoup
+import requests
+
+def scrape_tides_data(url):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    response = requests.get(url, headers=headers)
+    soup = BeautifulSoup(response.content, 'html.parser')
+    
+    # Adapte conforme o site específico
+    tide_data = []
+    # ... lógica de extração específica
+    
+    return tide_data
+```
+
+## 2. Sistema de Banco de Dados
+
+```python
+import sqlite3
+from datetime import datetime
+
+class TideDatabase:
+    def __init__(self, db_path="tides_beaches.db"):
+        self.db_path = db_path
+        self.init_database()
+    
+    def init_database(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Tabela de praias
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS beaches (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            latitude REAL NOT NULL,
+            longitude REAL NOT NULL,
+            country TEXT,
+            region TEXT,
+            station_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+        
+        # Tabela de dados de marés
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tides (
+            id INTEGER PRIMARY KEY,
+            beach_id INTEGER,
+            datetime TIMESTAMP NOT NULL,
+            height REAL NOT NULL,
+            tide_type TEXT, -- 'high', 'low'
+            source TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (beach_id) REFERENCES beaches (id)
+        )
+        ''')
+        
+        # Tabela de condições das praias
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS beach_conditions (
+            id INTEGER PRIMARY KEY,
+            beach_id INTEGER,
+            date DATE NOT NULL,
+            wave_height REAL,
+            wind_speed REAL,
+            wind_direction TEXT,
+            weather_condition TEXT,
+            temperature REAL,
+            water_temperature REAL,
+            visibility TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (beach_id) REFERENCES beaches (id)
+        )
+        ''')
+        
+        conn.commit()
+        conn.close()
+    
+    def add_beach(self, name, lat, lon, country, region, station_id=None):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+        INSERT INTO beaches (name, latitude, longitude, country, region, station_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ''', (name, lat, lon, country, region, station_id))
+        
+        beach_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return beach_id
+    
+    def add_tide_data(self, beach_id, datetime_str, height, tide_type, source):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+        INSERT INTO tides (beach_id, datetime, height, tide_type, source)
+        VALUES (?, ?, ?, ?, ?)
+        ''', (beach_id, datetime_str, height, tide_type, source))
+        
+        conn.commit()
+        conn.close()
+```
+
+## 3. Coletores de Dados Automatizados
+
+```python
+import schedule
+import time
+from datetime import datetime, timedelta
+
+class TideDataCollector:
+    def __init__(self, database):
+        self.db = database
+    
+    def collect_all_tides(self):
+        """Coleta dados de marés para todas as praias cadastradas"""
+        conn = sqlite3.connect(self.db.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT id, name, latitude, longitude, station_id FROM beaches")
+        beaches = cursor.fetchall()
+        
+        for beach in beaches:
+            beach_id, name, lat, lon, station_id = beach
+            print(f"Coletando dados para {name}...")
+            
+            try:
+                # Usar diferentes APIs baseado na localização
+                if station_id:  # NOAA
+                    tide_data = self.collect_noaa_data(station_id)
+                else:  # WorldTides ou outra API
+                    tide_data = self.collect_world_tides_data(lat, lon)
+                
+                self.save_tide_data(beach_id, tide_data)
+                
+            except Exception as e:
+                print(f"Erro ao coletar dados para {name}: {e}")
+        
+        conn.close()
+    
+    def collect_noaa_data(self, station_id):
+        today = datetime.now().strftime("%Y%m%d")
+        end_date = (datetime.now() + timedelta(days=7)).strftime("%Y%m%d")
+        
+        return get_noaa_tides(station_id, today, end_date)
+    
+    def save_tide_data(self, beach_id, tide_data):
+        # Processar e salvar os dados conforme o formato da API
+        for prediction in tide_data.get('predictions', []):
+            self.db.add_tide_data(
+                beach_id,
+                prediction['t'],
+                float(prediction['v']),
+                prediction['type'],
+                'NOAA'
+            )
+
+# Agendar coletas automáticas
+def setup_scheduler():
+    collector = TideDataCollector(TideDatabase())
+    
+    # Coletar dados a cada 6 horas
+    schedule.every(6).hours.do(collector.collect_all_tides)
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(3600)  # Verificar a cada hora
+```
+
+## 4. Integração com Agentes
+
+```python
+from typing import List, Dict, Any
+from datetime import datetime, timedelta
+
+class TideAgent:
+    def __init__(self, database_path: str):
+        self.db_path = database_path
+    
+    def get_current_tide_info(self, beach_name: str) -> Dict[str, Any]:
+        """Retorna informações atuais sobre a maré"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Buscar a praia
+        cursor.execute("SELECT id FROM beaches WHERE name LIKE ?", (f"%{beach_name}%",))
+        beach_result = cursor.fetchone()
+        
+        if not beach_result:
+            return {"error": "Praia não encontrada"}
+        
+        beach_id = beach_result[0]
+        now = datetime.now()
+        
+        # Buscar próximas marés
+        cursor.execute('''
+        SELECT datetime, height, tide_type 
+        FROM tides 
+        WHERE beach_id = ? AND datetime >= ? 
+        ORDER BY datetime 
+        LIMIT 4
+        ''', (beach_id, now.isoformat()))
+        
+        tides = cursor.fetchall()
+        conn.close()
+        
+        return {
+            "beach": beach_name,
+            "current_time": now.isoformat(),
+            "next_tides": [
+                {
+                    "time": tide[0],
+                    "height": tide[1],
+                    "type": tide[2]
+                } for tide in tides
+            ]
+        }
+    
+    def get_best_fishing_times(self, beach_name: str, days: int = 3) -> List[Dict]:
+        """Retorna os melhores horários para pesca"""
+        tide_info = self.get_current_tide_info(beach_name)
+        
+        if "error" in tide_info:
+            return []
+        
+        best_times = []
+        for tide in tide_info["next_tides"]:
+            # Regra simples: 2h antes e depois da maré alta
+            if tide["type"] == "high":
+                tide_time = datetime.fromisoformat(tide["time"])
+                best_times.append({
+                    "start": (tide_time - timedelta(hours=2)).isoformat(),
+                    "end": (tide_time + timedelta(hours=2)).isoformat(),
+                    "reason": f"Maré alta ({tide['height']}m) às {tide_time.strftime('%H:%M')}"
+                })
+        
+        return best_times
+
+# Funções para uso com LangChain/LangGraph
+def create_tide_tools():
+    """Criar ferramentas para usar com agentes"""
+    tide_agent = TideAgent("tides_beaches.db")
+    
+    def get_tide_info_tool(beach_name: str) -> str:
+        """Ferramenta para obter informações de maré"""
+        info = tide_agent.get_current_tide_info(beach_name)
+        return json.dumps(info, indent=2)
+    
+    def get_fishing_times_tool(beach_name: str) -> str:
+        """Ferramenta para obter melhores horários de pesca"""
+        times = tide_agent.get_best_fishing_times(beach_name)
+        return json.dumps(times, indent=2)
+    
+    return [get_tide_info_tool, get_fishing_times_tool]
+```
+
+## 5. Exemplo de Uso
+
+```python
+# Configurar o sistema
+db = TideDatabase()
+
+# Adicionar algumas praias
+beach_id = db.add_beach(
+    "Copacabana", 
+    -22.9711, 
+    -43.1822, 
+    "Brasil", 
+    "Rio de Janeiro"
+)
+
+# Inicializar coleta de dados
+collector = TideDataCollector(db)
+collector.collect_all_tides()
+
+# Usar com agente
+tide_agent = TideAgent("tides_beaches.db")
+current_info = tide_agent.get_current_tide_info("Copacabana")
+print(json.dumps(current_info, indent=2))
+
+fishing_times = tide_agent.get_best_fishing_times("Copacabana")
+print("Melhores horários para pesca:")
+for time_slot in fishing_times:
+    print(f"- {time_slot['start']} até {time_slot['end']}: {time_slot['reason']}")
+```
+
+## 6. APIs Recomendadas
+
+1. **NOAA Tides and Currents** (EUA) - Gratuita
+2. **WorldTides** - Freemium (500 chamadas/mês grátis)
+3. **Tides API** - Várias opções pagas
+4. **MarineWeather APIs** - Para condições adicionais
+
+Este sistema permite coletar, armazenar e consultar dados de marés de forma estruturada para uso com agentes inteligentes. Você pode expandir adicionando mais fontes de dados, melhores algoritmos de previsão, e integrações mais sofisticadas com frameworks de agentes.
+
