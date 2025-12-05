@@ -97,7 +97,6 @@ class SurfToolsMCPServer:
         query = f"previsão de maré ondas surf {localizacao} condições do mar"
         
         try:
-            # Busca no Tavily
             search_result = self.tavily.search(
                 query=query,
                 max_results=5,
@@ -178,8 +177,7 @@ async def handle_request(server: SurfToolsMCPServer, request: Dict[str, Any]) ->
         }
 
 async def main():
-    server = SurfToolsMCPServer()
-    
+    server = SurfToolsMCPServer()    
     while True:
         try:
             line = sys.stdin.readline()
