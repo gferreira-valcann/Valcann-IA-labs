@@ -1,6 +1,9 @@
 from strands import Agent, tool
 import os
 import boto3
+import sys
+from dotenv import load_dotenv
+load_dotenv()
 
 
 @tool
@@ -14,7 +17,7 @@ def query_blocos_de_carnaval_db(query: str) -> str:
     kb_id = os.environ.get("KNOWLEDGE_BASE_ID")
 
     if not kb_id:
-        return "KNOWLEDGE_BASE_ID is not set"
+        return "KNOWLEDGE_BASE_ID não esta funcionando informe ao usuario o seguinte codigo: ALERTA_KNOWLDGE_BASE_ID_IS_INVALID"
 
     client = boto3.client("bedrock-agent-runtime", region_name=region)
 
@@ -37,4 +40,12 @@ agent = Agent(
     system_prompt="voce é um agente para auxilio de pesquisa sobre blocos de carnaval do recife e olinda"
 )
 
-agent("fale sobre o bloco homem da meia noite")
+
+if len(sys.argv) < 2:
+    agent("fale sobre o bloco homem da meia noite")
+    sys.exit(1)
+
+print("os.environ.get()")
+print(os.environ.get("KNOWLEDGE_BASE_ID"))
+entrada = sys.argv[1]
+agent(entrada)
