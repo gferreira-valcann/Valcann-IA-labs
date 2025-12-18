@@ -4,6 +4,14 @@ import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from strands import Agent
+from strands.models import BedrockModel
+
+bedrock_model = BedrockModel(
+    model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    guardrail_id="h0nnhgkqzxx2", 
+    guardrail_version="1",                    
+    guardrail_trace="enabled",            
+)
 
 async def create_mcp_agent():
     server_params = StdioServerParameters(
@@ -14,12 +22,10 @@ async def create_mcp_agent():
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            
             tools_response = await session.list_tools()
             print(f"Ferramentas disponíveis: {[t.name for t in tools_response.tools]}")
             
             mcp_tools = []
-            
             for tool_info in tools_response.tools:
                 async def create_tool_wrapper(tool_name):
                     async def wrapper(**kwargs):
@@ -44,7 +50,8 @@ async def create_mcp_agent():
                     "Sempre que o usuário mencionar uma localização, use as ferramentas "
                     "para buscar informações sobre condições de surf e ataques de tubarão."
                 ),
-                tools=mcp_tools
+                tools=mcp_tools,
+                model=bedrock_model
             )
             
             return agent
@@ -57,10 +64,6 @@ async def main():
     
     try:
         agent = await create_mcp_agent()
-        
-        print(f"Prompt: {prompt}")
-        print("\n" + "="*50 + "\n")
-        
         result = await agent(prompt)
         print(result)
         
